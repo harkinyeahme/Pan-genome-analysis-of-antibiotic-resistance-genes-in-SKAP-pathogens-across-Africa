@@ -49,3 +49,4 @@ for file in "${fastq_files[@]}"; do
 done
 
 echo "✅ All FASTQ files renamed successfully in $(pwd)"
+
