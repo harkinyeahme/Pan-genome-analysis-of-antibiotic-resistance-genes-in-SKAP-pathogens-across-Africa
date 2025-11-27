@@ -1,0 +1,51 @@
+#!/bin/bash
+# ===============================================================
+# FASTQ FILE RENAMING SCRIPT
+# Purpose: Simplify paired-end FASTQ filenames in-place
+
+# ---------------------------------------------------------------
+# IMPORTANT NOTES:
+# 1. Run this script from inside the `raw_data/` directory.
+# 2. Renames FASTQ files in-place (no new folder is created).
+# 3. Paired-end reads are detected using _1/_2 suffix.
+# 4. Files without _1/_2 keep only the first code segment.
+# 5. Safe renaming: Only renames if the filename needs changing.
+# ---------------------------------------------------------------
+
+# Enable nullglob to prevent issues if no files match
+shopt -s nullglob
+
+# Collect all FASTQ files in the current directory
+fastq_files=(*.fastq.gz)
+
+# Check if there are any FASTQ files to process
+if [ ${#fastq_files[@]} -eq 0 ]; then
+    echo "  No FASTQ files found in $(pwd)"
+    exit 1
+fi
+
+# Loop through each FASTQ file
+for file in "${fastq_files[@]}"; do
+    # Extract the first code (everything before the first underscore)
+    code=$(echo "$file" | cut -d'_' -f1)
+
+    # Determine the new filename based on paired-end pattern
+    if [[ "$file" =~ _1\.fastq\.gz$ ]]; then
+        # Forward read
+        new_name="${code}_1.fastq.gz"
+    elif [[ "$file" =~ _2\.fastq\.gz$ ]]; then
+        # Reverse read
+        new_name="${code}_2.fastq.gz"
+    else
+        # Single-end or non-standard naming
+        new_name="${code}.fastq.gz"
+    fi
+
+    # Rename the file only if needed
+    if [[ "$file" != "$new_name" ]]; then
+        mv -f "$file" "$new_name"
+        echo "Renamed: $file → $new_name"
+    fi
+done
+
+echo "✅ All FASTQ files renamed successfully in $(pwd)"

@@ -1,0 +1,129 @@
+#!/bin/bash
+# ================================================================
+# PROJECT SKAP AMR PIPELINE (Multi-Pathogen, Multi-Country)
+# ================================================================
+# This pipeline automatically processes WGS data for multiple pathogens
+# and countries. It performs:
+#   1. Detect pathogen directories under /home/maa/Project_ESKAPE
+#   2. Detect country directories under each pathogen
+#   3. For each sample:
+#       - FastQC (pre-trim)
+#       - Trim reads using fastp
+#       - FastQC (post-trim)
+#       - Assemble genome using SPAdes
+#       - Assess assembly quality with QUAST
+#       - Detect AMR genes using ABRICATE
+#   4. Generate ABRICATE summary per country
+#   5. Generate MultiQC reports per country
+# ================================================================
+
+set -euo pipefail
+
+# ---------------------------
+# Base project directory
+# ---------------------------
+base_project_dir="/home/maa/Project_ESKAPE"
+
+echo "🔍 Detecting pathogen directories under '$base_project_dir'..."
+
+# ---------------------------
+# Loop through pathogen directories
+# ---------------------------
+for pathogen_path in "$base_project_dir"/*/; do
+    pathogen_path=${pathogen_path%/}
+    pathogen=$(basename "$pathogen_path")
+    echo "============================================="
+    echo " Processing pathogen: $pathogen"
+    echo "============================================="
+
+    # ---------------------------
+    # Loop through country directories
+    # ---------------------------
+    for country_path in "$pathogen_path"/*/; do
+        country_path=${country_path%/}
+        country=$(basename "$country_path")
+
+        # Skip if no raw_data
+        if [[ ! -d "$country_path/raw_data" ]]; then
+            echo "  Skipping '$country' — no raw_data/ folder found."
+            continue
+        fi
+
+        echo "---------------------------------------------"
+        echo " Processing country: $country"
+        echo "---------------------------------------------"
+
+        # ---------------------------
+        # Define output directories
+        # ---------------------------
+        fastq_files="$country_path/raw_data"
+        pre_trim_qc="$country_path/pre_trim_qc"
+        trimmed="$country_path/trimmed"
+        post_trim_qc="$country_path/post_trim_qc"
+        assembly="$country_path/assembly"
+        quast_report="$country_path/quast_report"
+        AMR="$country_path/AMR"
+        multiqc_report="$country_path/multiqc_reports"
+
+        mkdir -p "$pre_trim_qc" "$trimmed" "$post_trim_qc" \
+                 "$assembly" "$quast_report" "$AMR" "$multiqc_report"
+
+        # ---------------------------
+        # Loop through paired-end FASTQ files
+        # ---------------------------
+        for R1 in "$fastq_files"/*_1.fastq.gz; do
+            [[ -e "$R1" ]] || { echo "⚠️  No FASTQ files found in $fastq_files"; break; }
+            acc=$(basename "$R1" _1.fastq.gz)
+            R2="$fastq_files/${acc}_2.fastq.gz"
+            [[ -f "$R2" ]] || { echo "  Missing R2 for $acc — skipping!"; continue; }
+
+            echo ">>>  Processing sample: $acc"
+
+            # Step 1: Pre-trim FastQC
+            fastqc -o "$pre_trim_qc" "$R1" "$R2"
+
+            # Step 2: Trim reads using fastp
+            fastp -i "$R1" -I "$R2" \
+                  -o "$trimmed/${acc}_1.trim.fastq.gz" \
+                  -O "$trimmed/${acc}_2.trim.fastq.gz" \
+                  -h "$trimmed/${acc}_trim.html" \
+                  -j "$trimmed/${acc}_trim.json"
+
+            # Step 3: Post-trim FastQC
+            fastqc -o "$post_trim_qc" \
+                  "$trimmed/${acc}_1.trim.fastq.gz" \
+                  "$trimmed/${acc}_2.trim.fastq.gz"
+
+            # Step 4: SPAdes assembly
+            spades_out="$assembly/$acc"
+            mkdir -p "$spades_out"
+            spades.py --phred-offset 33 \
+                      -1 "$trimmed/${acc}_1.trim.fastq.gz" \
+                      -2 "$trimmed/${acc}_2.trim.fastq.gz" \
+                      -o "$spades_out"
+
+            # Step 5: QUAST
+            quast.py "$spades_out/contigs.fasta" -o "$quast_report/$acc"
+
+            # Step 6: ABRICATE
+            abricate "$spades_out/contigs.fasta" > "$AMR/${acc}_amr.tab"
+
+            echo "✅ Finished sample: $acc"
+        done
+
+        # ABRICATE summary for the country
+        abricate --summary "$AMR"/*_amr.tab > "$AMR/summary_${country}.tab"
+
+        # MultiQC reports per country
+        multiqc "$pre_trim_qc" -o "$multiqc_report" -n "pre_trim_qc_${country}.html"
+        multiqc "$post_trim_qc" -o "$multiqc_report" -n "post_trim_qc_${country}.html"
+        multiqc "$assembly" -o "$multiqc_report" -n "assembly_${country}.html"
+        multiqc "$quast_report" -o "$multiqc_report" -n "quast_${country}.html"
+
+        echo " ✅ Completed processing for country: $country"
+    done
+
+    echo "  Completed processing for pathogen: $pathogen"
+done
+
+echo " Pipeline finished for ALL pathogens and countries!"
